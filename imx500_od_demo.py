@@ -14,6 +14,7 @@ import time
 import threading
 import argparse
 import numpy as np
+import psutil
 from picamera2 import Picamera2, MappedArray
 from picamera2.devices.imx500 import IMX500, NetworkIntrinsics
 
@@ -70,6 +71,30 @@ class State:
             return self._threshold
 
 state = State(threshold)
+
+# --- CPU usage monitor (background thread, non-blocking) ---
+class CpuMonitor:
+    """
+    Samples CPU usage every second in a background thread.
+    Using interval in the main thread would block the camera callback.
+    """
+    def __init__(self):
+        self._usage = 0.0
+        self.lock   = threading.Lock()
+        t = threading.Thread(target=self._run, daemon=True)
+        t.start()
+
+    def _run(self):
+        while True:
+            val = psutil.cpu_percent(interval=1)
+            with self.lock:
+                self._usage = val
+
+    def get(self):
+        with self.lock:
+            return self._usage
+
+cpu_monitor = CpuMonitor()
 
 # --- Named pipe listener thread ---
 def pipe_listener():
@@ -226,12 +251,25 @@ def draw_detections(request):
             cv2.rectangle(m.array, (x0, y0), (x1, y1), (0, 255, 0), 2)
             cv2.putText(m.array, label, (x0, max(y0 - 8, 20)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        cpu = cpu_monitor.get()
+
+        # CPU usage bar
+        bar_x, bar_y, bar_w, bar_h = 10, 10, 160, 18
+        filled = int(bar_w * cpu / 100)
+        bar_color = (0, 255, 0) if cpu < 50 else (0, 165, 255) if cpu < 80 else (0, 0, 255)
+        cv2.rectangle(m.array, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (80, 80, 80), -1)
+        cv2.rectangle(m.array, (bar_x, bar_y), (bar_x + filled, bar_y + bar_h), bar_color, -1)
+        cv2.rectangle(m.array, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (180, 180, 180), 1)
+        cv2.putText(m.array, f"CPU: {cpu:4.1f}%",
+                    (bar_x + bar_w + 8, bar_y + 14),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
+
         cv2.putText(m.array,
                     f"IMX500: On-Sensor AI ({model_name})",
-                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 2)
+                    (10, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 2)
         cv2.putText(m.array,
                     f"threshold: {thr:.2f}",
-                    (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 200, 0), 2)
+                    (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 200, 0), 2)
 
 imx500.show_network_fw_progress_bar()
 picam2.pre_callback = draw_detections
