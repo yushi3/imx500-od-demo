@@ -55,8 +55,10 @@ net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
 net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
 print("OpenCV DNN model loaded.")
 
-# --- Use IMX500 as plain camera (no DNN) ---
-imx500 = IMX500()
+# --- Use IMX500 as plain camera (DNN disabled) ---
+# IMX500() requires a network_file argument.
+# "inputtensoronly" model passes input through without inference.
+imx500 = IMX500("/usr/share/imx500-models/imx500_network_inputtensoronly.rpk")
 picam2 = Picamera2(imx500.camera_num)
 config = picam2.create_preview_configuration(
     main={"size": (640, 480)},
