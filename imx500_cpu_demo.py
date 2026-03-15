@@ -145,10 +145,11 @@ def draw_detections(request):
         # -- CPU inference via OpenCV DNN --
         # picamera2 outputs XBGR8888 (4ch), DNN requires BGR (3ch)
         frame_bgr = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+        # TF SSD MobileNetV2: input range 0-255, no mean subtraction, swapRB for RGB input
         blob = cv2.dnn.blobFromImage(
             frame_bgr, size=(300, 300),
-            mean=(127.5, 127.5, 127.5),
-            scalefactor=1/127.5, swapRB=True)
+            mean=(0, 0, 0),
+            scalefactor=1.0, swapRB=True)
 
         t0 = time.perf_counter()
         net.setInput(blob)
