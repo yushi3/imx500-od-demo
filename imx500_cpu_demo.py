@@ -35,6 +35,15 @@ COCO_LABELS = [
 MODEL_PB    = "frozen_inference_graph.pb"
 MODEL_PBTXT = "ssd_mobilenet_v2.pbtxt"
 PIPE_PATH   = "/tmp/imx500_ctrl"
+DETECTION_ROWS = 10
+
+# ANSI color codes
+C_RESET  = "\033[0m"
+C_CYAN   = "\033[96m"
+C_YELLOW = "\033[93m"
+C_GREEN  = "\033[92m"
+C_RED    = "\033[91m"
+C_BOLD   = "\033[1m"
 
 # --- Arguments ---
 parser = argparse.ArgumentParser()
@@ -196,6 +205,38 @@ def draw_detections(request):
         cv2.putText(m.array,
                     f"threshold: {thr:.2f}  inference: {ms:.1f}ms",
                     (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 200, 0), 2)
+
+    # -- Terminal detection output (fixed height = DETECTION_ROWS lines) --
+    thr_color = C_GREEN if thr >= 0.5 else C_YELLOW if thr >= 0.3 else C_RED
+    with inference_lock:
+        ms = inference_ms
+    print(f"\n{'='*60}")
+    print(f"{C_CYAN}[CPU INFERENCE (OpenCV DNN) @ {time.strftime('%H:%M:%S')}]{C_RESET}"
+          f"  inference: {C_BOLD}{ms:.1f}ms{C_RESET}")
+    print(f"{C_CYAN}[PARSED DETECTIONS]{C_RESET}  "
+          f"(threshold={thr_color}{C_BOLD}{thr:.2f}{C_RESET})")
+
+    lines = []
+    if len(results) == 0:
+        lines.append("  (no detections)")
+    else:
+        lines.append(f"  count: {len(results)}")
+        for i, det in enumerate(results):
+            _, cls, score, xmin, ymin, xmax, ymax = det
+            score_color = C_GREEN if score >= 0.7 else C_YELLOW if score >= 0.5 else C_RED
+            lines.append(
+                f"  [{i+1}] {C_BOLD}{get_label(int(cls)):20s}{C_RESET}"
+                f"  score={score_color}{score:.3f}{C_RESET}"
+                f"  box=[ymin={ymin:.3f} xmin={xmin:.3f}"
+                f" ymax={ymax:.3f} xmax={xmax:.3f}]"
+            )
+
+    lines = lines[:DETECTION_ROWS]
+    while len(lines) < DETECTION_ROWS:
+        lines.append("")
+    for line in lines:
+        print(line)
+    print(f"{'='*60}")
 
 picam2.pre_callback = draw_detections
 picam2.start(config, show_preview=True)

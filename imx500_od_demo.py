@@ -33,6 +33,14 @@ DEFAULT_THRESHOLD = {
 PIPE_PATH      = "/tmp/imx500_ctrl"
 DETECTION_ROWS = 10  # Fixed number of rows in detection display
 
+# ANSI color codes
+C_RESET  = "\033[0m"
+C_CYAN   = "\033[96m"
+C_YELLOW = "\033[93m"
+C_GREEN  = "\033[92m"
+C_RED    = "\033[91m"
+C_BOLD   = "\033[1m"
+
 # --- Arguments ---
 parser = argparse.ArgumentParser()
 parser.add_argument("--model", default="ssd",
@@ -184,7 +192,7 @@ def draw_detections(request):
 
     # -- 1. Raw tensor display --
     print(f"\n{'='*60}")
-    print(f"[RAW OUTPUT TENSORS from IMX500 @ {time.strftime('%H:%M:%S')}]")
+    print(f"{C_CYAN}[RAW OUTPUT TENSORS from IMX500 @ {time.strftime('%H:%M:%S')}]{C_RESET}")
 
     tensor_meta = [
         ("boxes  ", "BBOX coordinates [ymin,xmin,ymax,xmax] per candidate"),
@@ -196,7 +204,7 @@ def draw_detections(request):
     for i, tensor in enumerate(np_outputs):
         flat = tensor.flatten()
         name, desc = tensor_meta[i] if i < len(tensor_meta) else (f"output{i}", "")
-        print(f"  tensor[{i}] {name}  {desc}")
+        print(f"  tensor[{i}] {C_BOLD}{name}{C_RESET}  {desc}")
 
         if i == 0:
             print(f"             shape={tensor.shape}")
@@ -208,7 +216,8 @@ def draw_detections(request):
             print(f"             shape={tensor.shape}  [{sample} ...]")
             if i == 1:
                 n_over = int((flat > thr).sum())
-                print(f"             -> above threshold={thr:.2f}: {n_over} candidates")
+                thr_color = C_GREEN if thr >= 0.5 else C_YELLOW if thr >= 0.3 else C_RED
+                print(f"             -> above threshold={thr_color}{C_BOLD}{thr:.2f}{C_RESET}: {n_over} candidates")
             if i == 2:
                 top_labels = [get_label(int(c)) for c in flat[:5]]
                 print(f"             -> top 5 labels: {top_labels}")
@@ -224,10 +233,12 @@ def draw_detections(request):
     else:
         lines.append(f"  count: {len(scores)}")
         for i, (box, score, cls) in enumerate(zip(boxes, scores, classes)):
+            score_color = C_GREEN if score >= 0.7 else C_YELLOW if score >= 0.5 else C_RED
             lines.append(
-                f"  [{i+1}] {get_label(cls):20s}  score={score:.3f}  "
-                f"box=[ymin={box[0]:.3f} xmin={box[1]:.3f} "
-                f"ymax={box[2]:.3f} xmax={box[3]:.3f}]"
+                f"  [{i+1}] {C_BOLD}{get_label(cls):20s}{C_RESET}"
+                f"  score={score_color}{score:.3f}{C_RESET}"
+                f"  box=[ymin={box[0]:.3f} xmin={box[1]:.3f}"
+                f" ymax={box[2]:.3f} xmax={box[3]:.3f}]"
             )
 
     # Pad or truncate to exactly DETECTION_ROWS lines to prevent layout shift
@@ -235,9 +246,11 @@ def draw_detections(request):
     while len(lines) < DETECTION_ROWS:
         lines.append("")
 
-    print(f"[PARSED DETECTIONS]  (threshold={thr:.2f})")
+    thr_color = C_GREEN if thr >= 0.5 else C_YELLOW if thr >= 0.3 else C_RED
+    print(f"{C_CYAN}[PARSED DETECTIONS]{C_RESET}  "
+          f"(threshold={thr_color}{C_BOLD}{thr:.2f}{C_RESET})")
     for line in lines:
-        print(f"{line:<78}")
+        print(line)
     print(f"{'='*60}")
 
     # -- 3. Draw BBOX on preview --
