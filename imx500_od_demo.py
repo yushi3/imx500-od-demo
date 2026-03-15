@@ -5,17 +5,12 @@ IMX500 Object Detection Demo
 - モデルは --model で切り替え可能
 - BBOX座標の正規化を自動判定
 - RAW Output Tensorとパース結果を両方表示
-- threshold をキー入力でリアルタイム変更可能
-    +    → +0.05
-    -    → -0.05
-    1〜9 → 0.1〜0.9 に直接セット
+- threshold は別ターミナルで imx500_od_ctrl.py から変更可能
 """
 
 import cv2
-import sys
+import os
 import time
-import tty
-import termios
 import threading
 import argparse
 import numpy as np
@@ -33,6 +28,8 @@ DEFAULT_THRESHOLD = {
     "efficientdet": 0.50,
     "nanodet":      0.25,
 }
+
+PIPE_PATH = "/tmp/imx500_ctrl"
 
 # --- 引数 ---
 parser = argparse.ArgumentParser()
@@ -59,52 +56,52 @@ config = picam2.create_preview_configuration(
 # --- threshold をスレッド間で共有 ---
 class State:
     def __init__(self, initial):
-        self.threshold = initial
+        self._threshold = initial
         self.lock = threading.Lock()
 
     def set(self, val):
         with self.lock:
-            self.threshold = round(max(0.05, min(0.95, val)), 2)
-            print(f"\n>>> threshold = {self.threshold:.2f} <<<")
+            self._threshold = round(max(0.05, min(0.95, val)), 2)
+        print(f"[CTRL] threshold = {self._threshold:.2f}")
 
     def get(self):
         with self.lock:
-            return self.threshold
+            return self._threshold
 
 state = State(threshold)
 
-# --- キー入力スレッド ---
-def key_listener():
+# --- named pipe 受信スレッド ---
+def pipe_listener():
     """
-    ターミナルをrawモードにしてキー入力を監視する。
-    +/=  → +0.05
-    -/_  → -0.05
-    1〜9 → 0.1〜0.9 に直接セット
-    q    → 終了
+    /tmp/imx500_ctrl (named pipe) からコマンドを受信して threshold を更新する。
+    imx500_od_ctrl.py から送信される。
+    コマンド形式:
+      set 0.65   → threshold を 0.65 に設定
+      inc        → threshold を +0.05
+      dec        → threshold を -0.05
     """
-    fd = sys.stdin.fileno()
-    old = termios.tcgetattr(fd)
-    try:
-        tty.setraw(fd)
-        while True:
-            ch = sys.stdin.read(1)
-            if ch in ('+', '='):
-                state.set(state.get() + 0.05)
-            elif ch in ('-', '_'):
-                state.set(state.get() - 0.05)
-            elif ch.isdigit() and ch != '0':
-                state.set(int(ch) * 0.1)
-            elif ch in ('q', 'Q', '\x03'):  # q or Ctrl+C
-                termios.tcsetattr(fd, termios.TCSADRAIN, old)
-                import os, signal
-                os.kill(os.getpid(), signal.SIGINT)
-                break
-    except Exception:
-        pass
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    if not os.path.exists(PIPE_PATH):
+        os.mkfifo(PIPE_PATH)
+    print(f"[CTRL] named pipe ready: {PIPE_PATH}")
+    while True:
+        try:
+            with open(PIPE_PATH, 'r') as pipe:
+                for line in pipe:
+                    cmd = line.strip()
+                    if cmd == "inc":
+                        state.set(state.get() + 0.05)
+                    elif cmd == "dec":
+                        state.set(state.get() - 0.05)
+                    elif cmd.startswith("set "):
+                        try:
+                            state.set(float(cmd.split()[1]))
+                        except ValueError:
+                            pass
+        except Exception as e:
+            print(f"[CTRL] pipe error: {e}")
+            time.sleep(0.5)
 
-threading.Thread(target=key_listener, daemon=True).start()
+threading.Thread(target=pipe_listener, daemon=True).start()
 
 # --- ユーティリティ ---
 def get_label(cls: int) -> str:
@@ -113,51 +110,29 @@ def get_label(cls: int) -> str:
     return f"class_{cls}"
 
 def normalize_boxes(boxes, np_outputs):
-    """
-    BBOX座標を 0~1 正規化に統一する。
-      - 全候補の最大値が 1.1 以下 → 正規化済みとみなす（わずかな超過を許容）
-      - 最大値が 1.1 超            → 絶対ピクセル値、入力サイズで割って正規化
-    入力サイズは全候補のymax/xmax最大値から推定し32の倍数に丸める（320, 416等）。
-    """
     if len(boxes) == 0:
         return boxes, None
-
     all_boxes = np_outputs[0][0]
     all_max   = float(all_boxes.max())
-
     if all_max <= 1.1:
         return boxes, None
-
     input_size = float(all_boxes[:, 2:].max())
     input_size = round(input_size / 32) * 32
     return boxes / input_size, input_size
 
 def parse_ssd(np_outputs, thr):
-    """
-    TF OD API互換フォーマット:
-      tensor[0] boxes   (1, N, 4)  [ymin, xmin, ymax, xmax]
-      tensor[1] scores  (1, N)     信頼スコア 降順ソート済み
-      tensor[2] classes (1, N)     クラスID
-      tensor[3] max_det (1, 1)     候補数上限 (固定値、使用しない)
-    """
     boxes   = np_outputs[0][0]
     scores  = np_outputs[1][0]
     classes = np_outputs[2][0].astype(int)
     mask    = scores > thr
-
     boxes   = boxes[mask]
     scores  = scores[mask]
     classes = classes[mask]
-
     boxes, input_size = normalize_boxes(boxes, np_outputs)
     return boxes, scores, classes, input_size
 
 def fmt_boxes(np_outputs, n_show=3):
-    """
-    tensor[0] を [[ymin,xmin,ymax,xmax], ...] 形式で表示する。
-    n_show: 表示する候補数
-    """
-    raw = np_outputs[0][0][:n_show]  # (n_show, 4)
+    raw   = np_outputs[0][0][:n_show]
     items = [f"[{','.join(f'{v:.4f}' for v in row)}]" for row in raw]
     return "[" + ", ".join(items) + ", ...]"
 
@@ -183,11 +158,9 @@ def draw_detections(request):
     for i, tensor in enumerate(np_outputs):
         flat = tensor.flatten()
         name, desc = tensor_meta[i] if i < len(tensor_meta) else (f"output{i}", "")
-
         print(f"  tensor[{i}] {name}  {desc}")
 
         if i == 0:
-            # boxes は [[y,x,y,x], ...] 形式で表示
             print(f"             shape={tensor.shape}")
             print(f"             {fmt_boxes(np_outputs, n_show=3)}")
             all_max = float(np_outputs[0][0].max())
@@ -196,19 +169,17 @@ def draw_detections(request):
         else:
             sample = " ".join(f"{v:.4f}" for v in flat[:12])
             print(f"             shape={tensor.shape}  [{sample} ...]")
-
-            if i == 1:  # scores
+            if i == 1:
                 n_over = int((flat > thr).sum())
                 print(f"             → threshold={thr:.2f} 以上: {n_over}個")
-
-            if i == 2:  # classes
+            if i == 2:
                 top_labels = [get_label(int(c)) for c in flat[:5]]
                 print(f"             → 上位5候補のラベル: {top_labels}")
 
     # ── ② パース後の結果表示 ──────────────────────────────
     boxes, scores, classes, input_size = parse_ssd(np_outputs, thr)
 
-    print(f"[PARSED DETECTIONS]  (threshold={thr:.2f}  +/-/1-9キーで変更)")
+    print(f"[PARSED DETECTIONS]  (threshold={thr:.2f})")
     if input_size:
         print(f"  (座標を {input_size:.0f}px → 0~1 に正規化)")
     if len(scores) == 0:
@@ -232,13 +203,11 @@ def draw_detections(request):
             cv2.rectangle(m.array, (x0, y0), (x1, y1), (0, 255, 0), 2)
             cv2.putText(m.array, label, (x0, max(y0 - 8, 20)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-
-        # threshold をオーバーレイ表示
         cv2.putText(m.array,
                     f"IMX500: On-Sensor AI ({model_name})",
                     (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 2)
         cv2.putText(m.array,
-                    f"threshold: {thr:.2f}  (+/-/1-9 to change)",
+                    f"threshold: {thr:.2f}",
                     (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 200, 0), 2)
 
 imx500.show_network_fw_progress_bar()
@@ -246,10 +215,12 @@ picam2.pre_callback = draw_detections
 picam2.start(config, show_preview=True)
 
 print(f"デモ開始 [model={model_name}  threshold={state.get():.2f}]")
-print(f"キー操作: +/- で±0.05、1〜9で直接セット、q で終了")
+print(f"別ターミナルで: python3 imx500_od_ctrl.py")
 try:
     while True:
         time.sleep(0.1)
 except KeyboardInterrupt:
     print("\n終了")
+    if os.path.exists(PIPE_PATH):
+        os.remove(PIPE_PATH)
     picam2.stop()
