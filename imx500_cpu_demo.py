@@ -143,8 +143,10 @@ def draw_detections(request):
         frame = m.array.copy()
 
         # -- CPU inference via OpenCV DNN --
+        # picamera2 outputs XBGR8888 (4ch), DNN requires BGR (3ch)
+        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
         blob = cv2.dnn.blobFromImage(
-            frame, size=(300, 300),
+            frame_bgr, size=(300, 300),
             mean=(127.5, 127.5, 127.5),
             scalefactor=1/127.5, swapRB=True)
 
