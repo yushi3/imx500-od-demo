@@ -143,6 +143,32 @@ def get_label(cls: int) -> str:
         return COCO_LABELS[cls]
     return f"class_{cls}"
 
+def draw_overlay(img, cpu, thr, ms):
+    """Draw semi-transparent background panel + text for CPU bar and labels."""
+    # Panel covers: CPU bar (y=10..28) + 2 text lines (y=52, y=80) → total y=5..92
+    panel_x, panel_y = 5, 5
+    panel_w, panel_h = 390, 92
+    overlay = img.copy()
+    cv2.rectangle(overlay, (panel_x, panel_y),
+                  (panel_x + panel_w, panel_y + panel_h), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.5, img, 0.5, 0, img)
+
+    # CPU usage bar
+    bar_x, bar_y, bar_w, bar_h = 10, 10, 160, 18
+    filled = int(bar_w * cpu / 100)
+    bar_color = (0, 255, 0) if cpu < 50 else (0, 165, 255) if cpu < 80 else (0, 0, 255)
+    cv2.rectangle(img, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (80, 80, 80), -1)
+    cv2.rectangle(img, (bar_x, bar_y), (bar_x + filled, bar_y + bar_h), bar_color, -1)
+    cv2.rectangle(img, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (180, 180, 180), 1)
+    cv2.putText(img, f"CPU: {cpu:4.1f}%",
+                (bar_x + bar_w + 8, bar_y + 14),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
+
+    cv2.putText(img, "CPU Inference (OpenCV DNN)",
+                (10, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 100, 255), 2)
+    cv2.putText(img, f"threshold: {thr:.2f}  inference: {ms:.1f}ms",
+                (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 200, 0), 2)
+
 def draw_detections(request):
     global inference_ms
     thr = state.get()
@@ -183,28 +209,9 @@ def draw_detections(request):
             cv2.putText(m.array, label, (x0, max(y0 - 8, 20)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
-        # -- Overlay --
-        cpu = cpu_monitor.get()
         with inference_lock:
             ms = inference_ms
-
-        # CPU usage bar
-        bar_x, bar_y, bar_w, bar_h = 10, 10, 160, 18
-        filled = int(bar_w * cpu / 100)
-        bar_color = (0, 255, 0) if cpu < 50 else (0, 165, 255) if cpu < 80 else (0, 0, 255)
-        cv2.rectangle(m.array, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (80, 80, 80), -1)
-        cv2.rectangle(m.array, (bar_x, bar_y), (bar_x + filled, bar_y + bar_h), bar_color, -1)
-        cv2.rectangle(m.array, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (180, 180, 180), 1)
-        cv2.putText(m.array, f"CPU: {cpu:4.1f}%",
-                    (bar_x + bar_w + 8, bar_y + 14),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
-
-        cv2.putText(m.array,
-                    "CPU Inference (OpenCV DNN)",
-                    (10, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 100, 255), 2)
-        cv2.putText(m.array,
-                    f"threshold: {thr:.2f}  inference: {ms:.1f}ms",
-                    (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 200, 0), 2)
+        draw_overlay(m.array, cpu_monitor.get(), thr, ms)
 
     # -- Terminal detection output (fixed height = DETECTION_ROWS lines) --
     thr_color = C_GREEN if thr >= 0.5 else C_YELLOW if thr >= 0.3 else C_RED

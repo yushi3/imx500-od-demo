@@ -82,15 +82,10 @@ state = State(threshold)
 
 # --- CPU usage monitor (background thread, non-blocking) ---
 class CpuMonitor:
-    """
-    Samples CPU usage every second in a background thread.
-    Using interval in the main thread would block the camera callback.
-    """
     def __init__(self):
         self._usage = 0.0
         self.lock   = threading.Lock()
-        t = threading.Thread(target=self._run, daemon=True)
-        t.start()
+        threading.Thread(target=self._run, daemon=True).start()
 
     def _run(self):
         while True:
@@ -106,13 +101,6 @@ cpu_monitor = CpuMonitor()
 
 # --- Named pipe listener thread ---
 def pipe_listener():
-    """
-    Receives commands from /tmp/imx500_ctrl (named pipe) and updates threshold.
-    Commands:
-      inc      -> threshold + 0.01
-      dec      -> threshold - 0.01
-      set 0.65 -> set threshold to 0.65
-    """
     if not os.path.exists(PIPE_PATH):
         os.mkfifo(PIPE_PATH)
     print(f"[CTRL] named pipe ready: {PIPE_PATH}")
@@ -182,6 +170,33 @@ def fmt_boxes(np_outputs, n_show=3):
     items = [f"[{','.join(f'{v:.4f}' for v in row)}]" for row in raw]
     return "[" + ", ".join(items) + ", ...]"
 
+def draw_overlay(img, cpu, thr):
+    """Draw semi-transparent background panel + text for CPU bar and labels."""
+    # Panel covers: CPU bar (y=10..28) + 2 text lines (y=52, y=80) → total y=5..92
+    panel_x, panel_y = 5, 5
+    panel_w, panel_h = 310, 92
+    # Draw semi-transparent black rectangle
+    overlay = img.copy()
+    cv2.rectangle(overlay, (panel_x, panel_y),
+                  (panel_x + panel_w, panel_y + panel_h), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.5, img, 0.5, 0, img)
+
+    # CPU usage bar
+    bar_x, bar_y, bar_w, bar_h = 10, 10, 160, 18
+    filled = int(bar_w * cpu / 100)
+    bar_color = (0, 255, 0) if cpu < 50 else (0, 165, 255) if cpu < 80 else (0, 0, 255)
+    cv2.rectangle(img, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (80, 80, 80), -1)
+    cv2.rectangle(img, (bar_x, bar_y), (bar_x + filled, bar_y + bar_h), bar_color, -1)
+    cv2.rectangle(img, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (180, 180, 180), 1)
+    cv2.putText(img, f"CPU: {cpu:4.1f}%",
+                (bar_x + bar_w + 8, bar_y + 14),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
+
+    cv2.putText(img, f"IMX500: On-Sensor AI ({model_name})",
+                (10, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 2)
+    cv2.putText(img, f"threshold: {thr:.2f}",
+                (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 200, 0), 2)
+
 def draw_detections(request):
     metadata   = request.get_metadata()
     np_outputs = imx500.get_outputs(metadata, add_batch=True)
@@ -241,7 +256,6 @@ def draw_detections(request):
                 f" ymax={box[2]:.3f} xmax={box[3]:.3f}]"
             )
 
-    # Pad or truncate to exactly DETECTION_ROWS lines to prevent layout shift
     lines = lines[:DETECTION_ROWS]
     while len(lines) < DETECTION_ROWS:
         lines.append("")
@@ -264,25 +278,7 @@ def draw_detections(request):
             cv2.rectangle(m.array, (x0, y0), (x1, y1), (0, 255, 0), 2)
             cv2.putText(m.array, label, (x0, max(y0 - 8, 20)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-        cpu = cpu_monitor.get()
-
-        # CPU usage bar
-        bar_x, bar_y, bar_w, bar_h = 10, 10, 160, 18
-        filled = int(bar_w * cpu / 100)
-        bar_color = (0, 255, 0) if cpu < 50 else (0, 165, 255) if cpu < 80 else (0, 0, 255)
-        cv2.rectangle(m.array, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (80, 80, 80), -1)
-        cv2.rectangle(m.array, (bar_x, bar_y), (bar_x + filled, bar_y + bar_h), bar_color, -1)
-        cv2.rectangle(m.array, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (180, 180, 180), 1)
-        cv2.putText(m.array, f"CPU: {cpu:4.1f}%",
-                    (bar_x + bar_w + 8, bar_y + 14),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
-
-        cv2.putText(m.array,
-                    f"IMX500: On-Sensor AI ({model_name})",
-                    (10, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 2)
-        cv2.putText(m.array,
-                    f"threshold: {thr:.2f}",
-                    (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 200, 0), 2)
+        draw_overlay(m.array, cpu_monitor.get(), thr)
 
 imx500.show_network_fw_progress_bar()
 picam2.pre_callback = draw_detections
