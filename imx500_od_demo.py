@@ -212,7 +212,7 @@ def draw_detections(request):
             is_norm = float(np_outputs[0][0].max()) <= 1.1
             print(f"             -> format: {'normalized (0~1)' if is_norm else 'absolute pixels (auto-normalize)'}")
         else:
-            sample = " ".join(f"{v:.4f}" for v in flat[:12])
+            sample = " ".join(f"{v:.4f}" for v in flat[:8])
             print(f"             shape={tensor.shape}  [{sample} ...]")
             if i == 1:
                 n_over = int((flat > thr).sum())
